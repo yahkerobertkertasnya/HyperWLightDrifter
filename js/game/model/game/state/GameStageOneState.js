@@ -69,7 +69,7 @@ export default class GameStageOneState extends GameBaseState {
         return __awaiter(this, void 0, void 0, function* () {
             game.prepareCanvas();
             const { camera, player } = game;
-            yield AssetManager.assetLoader([GameSettings.ASSETS.STAGE_ONE, GameSettings.ASSETS.PLAYER, GameSettings.ASSETS.PLAYER], game.player.outfit);
+            yield AssetManager.assetLoader([GameSettings.ASSETS.STAGE_ONE, GameSettings.ASSETS.PLAYER], game.player.outfit);
             game.mapGenerator.init();
             camera.init();
             player.centerPosition = Vector.parse({

@@ -80,7 +80,7 @@ export default class GameStageTwoState extends GameBaseState {
         return __awaiter(this, void 0, void 0, function* () {
             game.prepareCanvas();
             game.changeState();
-            yield AssetManager.assetLoader([GameSettings.ASSETS.STAGE_TWO, GameSettings.ASSETS.PLAYER, GameSettings.ASSETS.PLAYER], game.player.outfit);
+            yield AssetManager.assetLoader([GameSettings.ASSETS.STAGE_TWO, GameSettings.ASSETS.PLAYER], game.player.outfit);
             const { camera, player, elevator, enemyManager } = game;
             enemyManager.clearEntities();
             const mapGround = AssetManager.getImage('map_ground_second');

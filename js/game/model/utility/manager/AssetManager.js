@@ -32,55 +32,141 @@ class AssetManager {
     static getNumberedImage(name, number) {
         return this._assetList.get(`${name}_${number}`);
     }
-    static assetLoader(assetData, outfit, show = true) {
-        return __awaiter(this, void 0, void 0, function* () {
+    static assetLoader(assetData_1, outfit_1) {
+        return __awaiter(this, arguments, void 0, function* (assetData, outfit, show = true) {
             this.showLoading = show;
-            this.assetAmount = 0;
             this.counter = 0;
-            let assets = [];
+            const queue = this.buildQueue(assetData);
+            this.assetAmount = queue.length;
             if (this.showLoading)
                 this.htmlHandler.notify('loadingModal:open');
-            assetData.forEach((assetD) => {
-                assets = [...assets, ...assetD];
+            const failed = [];
+            let cursor = 0;
+            const worker = () => __awaiter(this, void 0, void 0, function* () {
+                while (cursor < queue.length) {
+                    const asset = queue[cursor++];
+                    this.htmlHandler.notify('loadingModal:editText', asset.name);
+                    if (!(yield this.loadWithRetry(asset, outfit))) {
+                        failed.push(asset.name);
+                    }
+                    this.htmlHandler.notify('loadingModal:editCounter', ++this.counter + '/' + this.assetAmount);
+                }
             });
-            for (const image of assets) {
-                const { amount } = image;
-                if (amount) {
-                    this.assetAmount += amount;
-                    continue;
-                }
-                this.assetAmount++;
+            const workers = [];
+            for (let i = 0; i < Math.min(this.maxParallelRequests, queue.length); i++) {
+                workers.push(worker());
             }
-            const promises = [];
-            for (const asset of assets) {
-                if (asset.isAudio) {
-                    promises.push(this.assetLoadAudio(asset));
-                    continue;
-                }
-                promises.push(this.assetLoadImage(asset, outfit));
+            try {
+                yield Promise.all(workers);
             }
-            yield Promise.all(promises);
-            if (this.showLoading)
-                this.htmlHandler.notify('loadingModal:close');
+            finally {
+                if (this.showLoading)
+                    this.htmlHandler.notify('loadingModal:close');
+            }
+            if (failed.length) {
+                console.error(`AssetManager: gave up on ${failed.length} asset(s) after ${this.maxAttempts} attempts`, failed);
+            }
         });
     }
-    static loadImage({ ref, name, isOutfit }, outfit) {
+    /**
+     * Flattens every asset group into the individual files that have to be
+     * fetched. Names are unique, so the same group being passed twice costs
+     * nothing.
+     */
+    static buildQueue(assetData) {
+        const queue = [];
+        const queued = new Set();
+        const push = (asset) => {
+            if (queued.has(asset.name)) {
+                return;
+            }
+            queued.add(asset.name);
+            queue.push(asset);
+        };
+        for (const group of assetData) {
+            for (const { ref, name, amount, isOutfit, isAudio } of group) {
+                if (!amount) {
+                    push({ ref, name, isOutfit, isAudio });
+                    continue;
+                }
+                const base = ref.split('.')[0];
+                const extension = isAudio ? ref.split('.')[1] : 'png';
+                for (let i = 1; i <= amount; i++) {
+                    push({
+                        ref: `${base}_${i}.${extension}`,
+                        name: `${name}_${i}`,
+                        isOutfit,
+                        isAudio,
+                    });
+                }
+            }
+        }
+        return queue;
+    }
+    /**
+     * A single dropped request used to leave the loading screen frozen forever.
+     * Retry it a few times instead, and keep going with a blank placeholder if
+     * it never arrives.
+     */
+    static loadWithRetry(asset, outfit) {
         return __awaiter(this, void 0, void 0, function* () {
-            let data = yield new Promise((resolve, reject) => {
-                const img = new Image();
-                img.src = '../assets/' + ref;
-                img.onload;
-                img.onload = () => {
-                    resolve(img);
-                };
-                img.onerror = () => {
-                    reject();
-                };
-            });
+            for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+                try {
+                    if (asset.isAudio) {
+                        yield this.loadAudio(asset, attempt);
+                    }
+                    else {
+                        yield this.loadImage(asset, outfit, attempt);
+                    }
+                    return true;
+                }
+                catch (error) {
+                    if (attempt === this.maxAttempts) {
+                        console.error(`AssetManager: could not load ${asset.name} (${asset.ref})`, error);
+                        if (!asset.isAudio) {
+                            this._assetList.set(asset.name, this.getFallbackImage());
+                        }
+                        return false;
+                    }
+                    this.htmlHandler.notify('loadingModal:editText', `${asset.name} (retrying ${attempt}/${this.maxAttempts - 1})`);
+                    yield this.delay(250 * attempt);
+                }
+            }
+            return false;
+        });
+    }
+    static loadImage(_a, outfit_1) {
+        return __awaiter(this, arguments, void 0, function* ({ ref, name, isOutfit }, outfit, attempt = 1) {
+            let data = yield this.requestImage(ref, attempt);
             if (isOutfit && outfit !== Outfit.default) {
                 data = this.replaceOutfitColor(data);
             }
             this._assetList.set(name, data);
+        });
+    }
+    static requestImage(ref, attempt) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            const cleanUp = () => {
+                window.clearTimeout(timeout);
+                img.onload = null;
+                img.onerror = null;
+            };
+            const timeout = window.setTimeout(() => {
+                cleanUp();
+                // Aborts the pending request so the retry starts from scratch.
+                img.removeAttribute('src');
+                reject(new Error(`timed out after ${this.requestTimeout}ms`));
+            }, this.requestTimeout);
+            img.onload = () => {
+                cleanUp();
+                resolve(img);
+            };
+            img.onerror = () => {
+                cleanUp();
+                reject(new Error('request failed'));
+            };
+            img.src = this.withRetryParam('../assets/' + ref, attempt);
         });
     }
     static replaceOutfitColor(image) {
@@ -106,65 +192,45 @@ class AssetManager {
         image.src = canvas.toDataURL('image/png');
         return image;
     }
-    static assetLoadImage({ ref, name, amount, isOutfit }, outfit) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (amount) {
-                for (let i = 1; i <= amount; i++) {
-                    const refNumbered = `${ref.split('.')[0]}_${i}.png`;
-                    const nameNumbered = `${name}_${i}`;
-                    this.htmlHandler.notify('loadingModal:editText', nameNumbered);
-                    yield this.loadImage({
-                        ref: refNumbered,
-                        name: nameNumbered,
-                        isOutfit: isOutfit,
-                    }, outfit);
-                    this.htmlHandler.notify('loadingModal:editCounter', ++this.counter + '/' + this.assetAmount);
+    static loadAudio(_a) {
+        return __awaiter(this, arguments, void 0, function* ({ ref, name }, attempt = 1) {
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), this.requestTimeout);
+            let data;
+            try {
+                const response = yield fetch(this.withRetryParam(`../assets/audio/${ref}`, attempt), {
+                    signal: controller.signal,
+                });
+                if (!response.ok) {
+                    throw new Error(`request failed with status ${response.status}`);
                 }
-                return;
+                data = yield response.arrayBuffer();
             }
-            this.htmlHandler.notify('loadingModal:editText', name);
-            yield this.loadImage({ ref, name, isOutfit }, outfit);
-            this.htmlHandler.notify('loadingModal:editCounter', ++this.counter + '/' + this.assetAmount);
-        });
-    }
-    static assetLoadAudio({ ref, name, amount }) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (amount) {
-                for (let i = 1; i <= amount; i++) {
-                    const refNumbered = `${ref.split('.')[0]}_${i}.${ref.split('.')[1]}`;
-                    const nameNumbered = `${name}_${i}`;
-                    this.htmlHandler.notify('loadingModal:editText', nameNumbered);
-                    yield this.loadAudio({
-                        ref: refNumbered,
-                        name: nameNumbered,
-                    });
-                    this.htmlHandler.notify('loadingModal:editCounter', ++this.counter + '/' + this.assetAmount);
-                }
-                return;
+            finally {
+                window.clearTimeout(timeout);
             }
-            this.htmlHandler.notify('loadingModal:editText', name);
-            yield this.loadAudio({ ref, name });
-            this.htmlHandler.notify('loadingModal:editCounter', ++this.counter + '/' + this.assetAmount);
-        });
-    }
-    static loadAudio({ ref, name }) {
-        return __awaiter(this, void 0, void 0, function* () {
-            const data = yield fetch(`../assets/audio/${ref}`).then((response) => response.arrayBuffer());
             const audioData = yield this.audioSource.decodeAudioData(data);
             this.assetList.set(name, audioData);
-            // const data: HTMLAudioElement = await new Promise((resolve, reject) => {
-            //     let audio = new Audio();
-            //     audio.src = '../assets/audio/' + ref;
-            //     audio.oncanplaythrough = () => {
-            //         resolve(audio);
-            //     };
-            //     audio.onerror = () => {
-            //         reject();
-            //     };
-            // });
-            //
-            // this._assetList.set(name, data);
         });
+    }
+    /**
+     * Keeps a retry from being served whatever the browser cached for the
+     * attempt that just failed.
+     */
+    static withRetryParam(url, attempt) {
+        return attempt > 1 ? `${url}?retry=${attempt}` : url;
+    }
+    static getFallbackImage() {
+        if (!this.fallbackImage) {
+            const image = new Image();
+            image.src =
+                'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+            this.fallbackImage = image;
+        }
+        return this.fallbackImage;
+    }
+    static delay(ms) {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
     }
     static getEqualPixel(color, pixel, i) {
         return pixel[i] === color[0] && pixel[i + 1] === color[1] && pixel[i + 2] === color[2];
@@ -174,4 +240,11 @@ class AssetManager {
 AssetManager.audioSource = new (window.AudioContext || window.webkitAudioContext)();
 AssetManager.colors = GameSettings.GAME.COLOR;
 AssetManager._assetList = new Map();
+// A browser only keeps a handful of sockets open per host, so kicking off
+// every request at once leaves hundreds of them queued and, once in a
+// while, one of them stalls without ever firing load or error.
+AssetManager.maxParallelRequests = 8;
+AssetManager.requestTimeout = 15000;
+AssetManager.maxAttempts = 4;
+AssetManager.fallbackImage = null;
 export default AssetManager;

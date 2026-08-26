@@ -79,7 +79,7 @@ export default class GameStageOneState extends GameBaseState {
         game.prepareCanvas();
         const { camera, player } = game;
 
-        await AssetManager.assetLoader([GameSettings.ASSETS.STAGE_ONE, GameSettings.ASSETS.PLAYER, GameSettings.ASSETS.PLAYER], game.player.outfit);
+        await AssetManager.assetLoader([GameSettings.ASSETS.STAGE_ONE, GameSettings.ASSETS.PLAYER], game.player.outfit);
 
         game.mapGenerator.init();
 
